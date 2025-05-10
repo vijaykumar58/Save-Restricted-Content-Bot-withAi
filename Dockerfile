@@ -34,7 +34,7 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir wheel
 
 # First install all requirements except custom packages
-RUN grep -v "dropbox" requirements.txt > base_requirements.txt && \
+RUN grep -vE "dropbox|ggnpyro" requirements.txt > base_requirements.txt && \
     pip install --no-cache-dir -r base_requirements.txt
 
 # Then handle custom packages with fallback
@@ -47,8 +47,10 @@ RUN if grep -q "dropbox" requirements.txt; then \
             echo "Custom package installed successfully"; \
         else \
             echo "Warning: Downloaded file is not a valid ZIP archive" && \
-            echo "Attempting fallback package..." && \
-            pip install --no-cache-dir ggnpyro==1.0.0; \
+            if grep -q "ggnpyro" requirements.txt; then \
+                echo "Attempting fallback package..." && \
+                pip install --no-cache-dir ggnpyro==1.0.0; \
+            fi; \
         fi && \
         rm -f package.zip; \
     fi
