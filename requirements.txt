@@ -1,14 +1,13 @@
 # Core Telegram/MTProto
-telethon==1.28.5  # Changed from 2.0.0 to latest stable version
-telethon-tgcrypto==1.2.4
-tgcrypto==1.2.4
+telethon==1.28.5
+tgcrypto==1.2.4  # Replaced telethon-tgcrypto
 
 # Database
 motor==4.1.1
 pymongo==4.5.0
 
 # Web/Server
-flask==2.2.5  # Downgraded for compatibility
+flask==2.2.5
 werkzeug==2.2.2
 aiohttp==3.8.4
 
@@ -30,6 +29,5 @@ cryptography==41.0.7
 pytz==2023.3.post1
 
 # Custom Package (with fallback)
-# Try Dropbox package first, fallback to ggnpyro if fails
 https://www.dropbox.com/scl/fi/e0fo6fcjn8kmr5r0x6wvg/myownpyro.zip?rlkey=d1znpwckss4ullz0sg7e1qjjg&st=kmbh7wdv&dl=1
 ggnpyro==1.0.0  # Fallback alternative
