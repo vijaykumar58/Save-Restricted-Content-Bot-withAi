@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Team SPY - Telegram Bot Status Page">
+    <title>Team SPY - Bot is Live</title>
+    <style>
+        /* Modern CSS Reset */
+        :root {
+            --primary: #00ffab;
+            --secondary: #6a11cb;
+            --tertiary: #2575fc;
+            --glow: 0 0 10px var(--primary), 0 0 20px var(--primary);
+        }
+
+        *, *::before, *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            min-height: 100vh;
+            font-family: 'Courier New', Courier, monospace;
+            background-color: #000;
+            color: #fff;
+            display: grid;
+            place-items: center;
+            overflow-x: hidden;
+            line-height: 1.6;
+        }
+
+        /* Main container */
+        .container {
+            text-align: center;
+            padding: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+            position: relative;
+            isolation: isolate;
+        }
+
+        /* Glitch animation */
+        @keyframes glitch {
+            0%, 100% {
+                text-shadow: 
+                    0.05em 0 0 rgba(255, 0, 255, 0.75),
+                    -0.05em -0.025em 0 rgba(0, 255, 0, 0.75);
+            }
+            14% {
+                text-shadow: 
+                    0.05em 0 0 rgba(255, 0, 255, 0.75),
+                    -0.05em -0.05em 0 rgba(0, 255, 0, 0.75);
+            }
+            15% {
+                text-shadow: 
+                    -0.05em -0.025em 0 rgba(255, 0, 255, 0.75),
+                    0.025em 0.025em 0 rgba(0, 255, 0, 0.75);
+            }
+            49% {
+                text-shadow: 
+                    -0.05em -0.025em 0 rgba(255, 0, 255, 0.75),
+                    0.025em 0.025em 0 rgba(0, 255, 0, 0.75);
+            }
+            50% {
+                text-shadow: 
+                    0.025em 0.05em 0 rgba(255, 0, 255, 0.75),
+                    0.05em 0 0 rgba(0, 255, 0, 0.75);
+            }
+            99% {
+                text-shadow: 
+                    0.025em 0.05em 0 rgba(255, 0, 255, 0.75),
+                    0.05em 0 0 rgba(0, 255, 0, 0.75);
+            }
+        }
+
+        /* Gradient animation */
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        .team-spy {
+            font-size: clamp(2.5rem, 8vw, 4rem);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5rem;
+            background: linear-gradient(
+                90deg, 
+                #ff6a00, 
+                #ee0979, 
+                #8e44ad, 
+                #3498db, 
+                #f4d03f
+            );
+            background-size: 300% 300%;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: 
+                gradientShift 8s ease infinite,
+                glitch 1.5s infinite;
+            margin-bottom: 1rem;
+        }
+
+        .bot-status {
+            font-size: clamp(1rem, 3vw, 1.5rem);
+            font-weight: 600;
+            letter-spacing: 0.2rem;
+            color: var(--primary);
+            text-shadow: var(--glow);
+            margin: 1.5rem 0;
+            position: relative;
+        }
+
+        .bot-status::before, 
+        .bot-status::after {
+            content: "⚡";
+            display: inline-block;
+            margin: 0 0.5rem;
+            animation: pulse 1.5s infinite alternate;
+        }
+
+        @keyframes pulse {
+            from { transform: scale(1); }
+            to { transform: scale(1.2); }
+        }
+
+        .actions {
+            display: flex;
+            gap: 1.5rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 2rem;
+        }
+
+        .btn {
+            --btn-bg: linear-gradient(90deg, var(--secondary), var(--tertiary));
+            display: inline-flex;
+            padding: 0.75rem 1.75rem;
+            font-size: clamp(0.9rem, 2vw, 1.1rem);
+            font-weight: 600;
+            color: white;
+            text-transform: uppercase;
+            text-decoration: none;
+            border-radius: 100vw;
+            background: var(--btn-bg);
+            background-size: 200% auto;
+            box-shadow: 0 0.25rem 1rem rgba(0, 0, 0, 0.2);
+            transition: 
+                transform 0.3s ease,
+                box-shadow 0.3s ease,
+                background-position 0.5s ease;
+            position: relative;
+            overflow: hidden;
+            z-index: 1;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, var(--tertiary), var(--secondary));
+            z-index: -1;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .btn:hover,
+        .btn:focus-visible {
+            transform: translateY(-0.25rem);
+            box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.3);
+            background-position: right center;
+        }
+
+        .btn:hover::before,
+        .btn:focus-visible::before {
+            opacity: 1;
+        }
+
+        /* Particles background */
+        .particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        /* Accessibility improvements */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border-width: 0;
+        }
+
+        /* Reduced motion preference */
+        @media (prefers-reduced-motion: reduce) {
+            * {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+                scroll-behavior: auto !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Particles background -->
+    <canvas class="particles" aria-hidden="true"></canvas>
+
+    <!-- Main Content -->
+    <main class="container">
+        <h1 class="team-spy">VIJAY KUMAR</h1>
+        <p class="bot-status">Bot is Live</p>
+
+        <div class="actions">
+            <a href="https://t.me/savecontentdiscusion" class="btn" aria-label="Join our Telegram channel">
+                Join Us
+            </a>
+            <a href="https://github.com/vijaykumar58" class="btn" aria-label="Visit our GitHub profile">
+                GitHub
+            </a>
+        </div>
+    </main>
+
+    <script>
+        // Particle animation
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.querySelector('.particles');
+            const ctx = canvas.getContext('2d');
+            
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            }
+            
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+            
+            const particles = [];
+            const particleCount = Math.floor(window.innerWidth / 10);
+            
+            class Particle {
+                constructor() {
+                    this.x = Math.random() * canvas.width;
+                    this.y = Math.random() * canvas.height;
+                    this.size = Math.random() * 2 + 1;
+                    this.speedX = Math.random() * 1 - 0.5;
+                    this.speedY = Math.random() * 1 - 0.5;
+                    this.color = `hsl(${Math.random() * 60 + 180}, 100%, 50%)`;
+                }
+                
+                update() {
+                    this.x += this.speedX;
+                    this.y += this.speedY;
+                    
+                    if (this.x > canvas.width || this.x < 0) this.speedX *= -1;
+                    if (this.y > canvas.height || this.y < 0) this.speedY *= -1;
+                }
+                
+                draw() {
+                    ctx.fillStyle = this.color;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+            
+            function init() {
+                for (let i = 0; i < particleCount; i++) {
+                    particles.push(new Particle());
+                }
+            }
+            
+            function animate() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                for (let particle of particles) {
+                    particle.update();
+                    particle.draw();
+                    
+                    // Connect particles
+                    for (let other of particles) {
+                        const dx = particle.x - other.x;
+                        const dy = particle.y - other.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        
+                        if (distance < 100) {
+                            ctx.strokeStyle = `rgba(0, 255, 171, ${1 - distance / 100})`;
+                            ctx.lineWidth = 0.5;
+                            ctx.beginPath();
+                            ctx.moveTo(particle.x, particle.y);
+                            ctx.lineTo(other.x, other.y);
+                            ctx.stroke();
+                        }
+                    }
+                }
+                
+                requestAnimationFrame(animate);
+            }
+            
+            init();
+            animate();
+        });
+    </script>
+</body>
+</html>

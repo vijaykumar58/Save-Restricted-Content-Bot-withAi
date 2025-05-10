@@ -1,0 +1,36 @@
+# Core Telegram/MTProto
+telethon==1.28.5
+telethon-tgcrypto==1.2.4
+tgcrypto==1.2.4
+
+# Database
+motor==3.1.2
+pymongo==4.3.3
+
+# Web/Server
+flask==2.2.5
+werkzeug==2.2.2
+aiohttp==3.8.4
+
+# File/Media Processing
+yt-dlp==2023.7.6
+mutagen==1.46.0
+Pillow==9.5.0
+opencv-python-headless==4.7.0.72
+
+# System Utilities
+psutil==5.9.5
+python-dotenv==1.0.0
+aiofiles==23.1.0
+
+# Security
+cryptography==39.0.2
+
+# Time
+pytz==2023.3
+
+# Custom Package (keep original URL)
+https://www.dropbox.com/scl/fi/e0fo6fcjn8kmr5r0x6wvg/myownpyro.zip?rlkey=d1znpwckss4ullz0sg7e1qjjg&st=kmbh7wdv&dl=0
+
+# Additional (uncommented ggnpyro alternative)
+# ggnpyro==1.0.0  # Alternative if custom package fails
