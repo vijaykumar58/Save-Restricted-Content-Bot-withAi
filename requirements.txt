@@ -1,33 +1,21 @@
-# Core Telegram/MTProto
 telethon
-telethon-tgcrypto  # Replaced telethon-tgcrypto
-
-# Database
-motor==4.1.1
-pymongo==4.5.0
-
-# Web/Server
-flask==2.2.5
+python-dotenv
+psutil
+opencv-python-headless
+devgagantools
+aiofiles
+# ggnpyro
+https://www.dl.dropboxusercontent.com/scl/fi/e0fo6fcjn8kmr5r0x6wvg/myownpyro.zip?rlkey=d1znpwckss4ullz0sg7e1qjjg&st=kmbh7wdv&dl=0
+aiohttp
+telethon-tgcrypto
+motor
+pymongo
+pytz
+Pillow
+tgcrypto
+flask
 werkzeug==2.2.2
-aiohttp==3.8.4
-
-# File/Media Processing
-yt-dlp==2023.11.16
-mutagen==1.47.0
-Pillow==10.1.0
-opencv-python-headless==4.8.1.78
-
-# System Utilities
-psutil==5.9.6
-python-dotenv==1.0.1
-aiofiles==23.2.1
-
-# Security
-cryptography==41.0.7
-
-# Time
-pytz==2023.3.post1
-
-# Custom Package (with fallback)
-https://www.dropbox.com/scl/fi/e0fo6fcjn8kmr5r0x6wvg/myownpyro.zip?rlkey=d1znpwckss4ullz0sg7e1qjjg&st=kmbh7wdv&dl=1
-ggnpyro==1.0.0  # Fallback alternative
+mutagen
+yt-dlp
+requests
+cryptography
