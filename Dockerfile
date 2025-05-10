@@ -35,9 +35,9 @@ RUN pip install --upgrade pip && \
 
 # First install core requirements
 RUN pip install --no-cache-dir \
-    telethon==1.28.5 \
-    tgcrypto==1.2.4 \
-    && pip install --no-cache-dir -r <(grep -vE "telethon|tgcrypto|dropbox|ggnpyro" requirements.txt)
+    telethon \
+    telethon-tgcrypto \
+    && pip install --no-cache-dir -r <(grep -vE "telethon|telethon-tgcrypto|dropbox|ggnpyro" requirements.txt)
 
 # Then handle custom packages with fallback
 RUN if grep -q "dropbox" requirements.txt; then \
