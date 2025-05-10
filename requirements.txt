@@ -1,6 +1,6 @@
 # Core Telegram/MTProto
-telethon==1.28.5
-tgcrypto==1.2.4  # Replaced telethon-tgcrypto
+telethon
+telethon-tgcrypto  # Replaced telethon-tgcrypto
 
 # Database
 motor==4.1.1
