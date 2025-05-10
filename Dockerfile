@@ -1,4 +1,4 @@
-# Use official Python slim image
+ # Use official Python slim image
 FROM python:3.10.13-slim-bullseye
 
 # Set environment variables
@@ -33,9 +33,11 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir wheel
 
-# First install all requirements except custom packages
-RUN grep -vE "dropbox|ggnpyro" requirements.txt > base_requirements.txt && \
-    pip install --no-cache-dir -r base_requirements.txt
+# First install core requirements
+RUN pip install --no-cache-dir \
+    telethon==1.28.5 \
+    tgcrypto==1.2.4 \
+    && pip install --no-cache-dir -r <(grep -vE "telethon|tgcrypto|dropbox|ggnpyro" requirements.txt)
 
 # Then handle custom packages with fallback
 RUN if grep -q "dropbox" requirements.txt; then \
