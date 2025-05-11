@@ -1,906 +1,759 @@
-import os
-import re
-import time
-import asyncio
-import json
-from typing import Dict, Any, Optional, Tuple
+import os, re, time, asyncio
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, MessageEntity # For caption entities if needed
 from pyrogram.errors import UserNotParticipant
-from config import (
-    API_ID,
-    API_HASH,
-    LOG_GROUP,
-    STRING,
-    FORCE_SUB,
-    FREEMIUM_LIMIT,
-    PREMIUM_LIMIT
-)
-from utils.func import (
-    get_user_data,
-    screenshot,
-    thumbnail,
-    get_video_metadata,
-    get_user_data_key,
-    process_text_with_rules,
-    is_premium_user,
-    parse_telegram_link
-)
-from shared_client import app as X
-from plugins.settings import rename_file
-from plugins.start import subscribe as sub
+from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
+from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata
+from utils.func import get_user_data_key, process_text_with_rules, is_premium_user, E
+from shared_client import app as X # Assuming X is the Pyrogram Client instance from shared_client
+from plugins.settings import rename_file # Assuming this function is correctly defined
+from plugins.start import subscribe as sub # Assuming this function is correctly defined
 from utils.custom_filters import login_in_progress
 from utils.encrypt import dcs
+import json
+from typing import Dict, Any, Optional
 
-# Initialize shared clients and state
-Y = None if not STRING else __import__('shared_client').userbot
-Z, P, UB, UC = {}, {}, {}, {}
+# Ensure userbot (Y) is correctly initialized from shared_client if STRING is present.
+# It should be an instance of Pyrogram's Client.
+Y = None
+if STRING:
+    from shared_client import userbot as UserbotClientInstance # Renaming for clarity
+    Y = UserbotClientInstance
 
-# Batch processing state management
+
+# Global dictionaries for caching or state. Consider if these need persistence or a more robust state management.
+Z: Dict[int, Dict[str, Any]] = {} # User states for commands
+P: Dict[int, Any] = {}           # Progress message cache for uploads
+UB: Dict[int, Client] = {}       # User-specific bot clients (Pyrogram)
+UC: Dict[int, Client] = {}       # User-specific user clients (Pyrogram)
+emp: Dict[Any, bool] = {}        # Cache for empty channel check (channel_id/username -> is_empty)
+
 ACTIVE_USERS_FILE = "active_users.json"
-ACTIVE_USERS = {}
+ACTIVE_USERS: Dict[str, Any] = {} # Active batch tasks
 
-class BatchManager:
-    @staticmethod
-    def load_active_users() -> Dict:
-        """Load active users from file."""
-        try:
-            if os.path.exists(ACTIVE_USERS_FILE):
-                with open(ACTIVE_USERS_FILE, 'r') as f:
-                    return json.load(f)
-            return {}
-        except Exception as e:
-            print(f"Error loading active users: {e}")
-            return {}
+def load_active_users():
+    global ACTIVE_USERS
+    try:
+        if os.path.exists(ACTIVE_USERS_FILE):
+            with open(ACTIVE_USERS_FILE, 'r') as f:
+                ACTIVE_USERS = json.load(f)
+        else:
+            ACTIVE_USERS = {}
+    except json.JSONDecodeError:
+        print(f"Warning: Could not decode {ACTIVE_USERS_FILE}. Starting with empty active users.")
+        ACTIVE_USERS = {}
+    except Exception as e:
+        print(f"Error loading active users: {e}")
+        ACTIVE_USERS = {} # Default to empty on other errors
+    return ACTIVE_USERS
 
-    @staticmethod
-    async def save_active_users() -> None:
-        """Save active users to file."""
-        try:
-            with open(ACTIVE_USERS_FILE, 'w') as f:
-                json.dump(ACTIVE_USERS, f)
-        except Exception as e:
-            print(f"Error saving active users: {e}")
+async def save_active_users_to_file():
+    try:
+        with open(ACTIVE_USERS_FILE, 'w') as f:
+            json.dump(ACTIVE_USERS, f, indent=4) # Add indent for readability
+    except Exception as e:
+        print(f"Error saving active users: {e}")
 
-    @staticmethod
-    async def add_active_batch(user_id: int, batch_info: Dict[str, Any]) -> None:
-        """Add an active batch for a user."""
-        ACTIVE_USERS[str(user_id)] = batch_info
-        await BatchManager.save_active_users()
+async def add_active_batch(user_id: int, batch_info: Dict[str, Any]):
+    ACTIVE_USERS[str(user_id)] = batch_info
+    await save_active_users_to_file()
 
-    @staticmethod
-    def is_user_active(user_id: int) -> bool:
-        """Check if user has an active batch."""
-        return str(user_id) in ACTIVE_USERS
+def is_user_active(user_id: int) -> bool:
+    return str(user_id) in ACTIVE_USERS
 
-    @staticmethod
-    async def update_batch_progress(user_id: int, current: int, success: int) -> None:
-        """Update batch progress for a user."""
-        if str(user_id) in ACTIVE_USERS:
-            ACTIVE_USERS[str(user_id)]["current"] = current
-            ACTIVE_USERS[str(user_id)]["success"] = success
-            await BatchManager.save_active_users()
+async def update_batch_progress(user_id: int, current: int, success: int):
+    user_id_str = str(user_id)
+    if user_id_str in ACTIVE_USERS:
+        ACTIVE_USERS[user_id_str]["current"] = current
+        ACTIVE_USERS[user_id_str]["success"] = success
+        await save_active_users_to_file()
 
-    @staticmethod
-    async def request_batch_cancel(user_id: int) -> bool:
-        """Request cancellation of a batch."""
-        if str(user_id) in ACTIVE_USERS:
-            ACTIVE_USERS[str(user_id)]["cancel_requested"] = True
-            await BatchManager.save_active_users()
-            return True
+async def request_batch_cancel(user_id: int) -> bool:
+    user_id_str = str(user_id)
+    if user_id_str in ACTIVE_USERS:
+        ACTIVE_USERS[user_id_str]["cancel_requested"] = True
+        await save_active_users_to_file()
+        return True
+    return False
+
+def should_cancel(user_id: int) -> bool:
+    user_str = str(user_id)
+    return user_str in ACTIVE_USERS and ACTIVE_USERS[user_str].get("cancel_requested", False)
+
+async def remove_active_batch(user_id: int):
+    user_id_str = str(user_id)
+    if user_id_str in ACTIVE_USERS:
+        del ACTIVE_USERS[user_id_str]
+        await save_active_users_to_file()
+
+def get_batch_info(user_id: int) -> Optional[Dict[str, Any]]:
+    return ACTIVE_USERS.get(str(user_id))
+
+# Load active users at startup
+ACTIVE_USERS = load_active_users()
+
+
+async def upd_dlg(c: Client): # c is a Pyrogram Client
+    try:
+        # Pyrogram clients update dialogs automatically or on interaction.
+        # Explicitly getting dialogs can be heavy.
+        # If needed for specific cache warming:
+        # async for _ in c.get_dialogs(limit=10): pass # limit to a small number
+        print(f"Dialog update requested for client {c.name}. Usually not explicitly needed for Pyrogram.")
+        return True
+    except Exception as e:
+        print(f'Failed to update dialogs for {c.name}: {e}')
         return False
 
-    @staticmethod
-    def should_cancel(user_id: int) -> bool:
-        """Check if batch should be cancelled."""
-        user_str = str(user_id)
-        return user_str in ACTIVE_USERS and ACTIVE_USERS[user_str].get("cancel_requested", False)
-
-    @staticmethod
-    async def remove_active_batch(user_id: int) -> None:
-        """Remove an active batch."""
-        if str(user_id) in ACTIVE_USERS:
-            del ACTIVE_USERS[str(user_id)]
-            await BatchManager.save_active_users()
-
-    @staticmethod
-    def get_batch_info(user_id: int) -> Optional[Dict[str, Any]]:
-        """Get batch info for a user."""
-        return ACTIVE_USERS.get(str(user_id))
-
-class ClientManager:
-    @staticmethod
-    async def update_dialogs(client: Client) -> bool:
-        """Update client dialogs."""
-        try:
-            async for _ in client.get_dialogs(limit=100):
-                pass
-            return True
-        except Exception as e:
-            print(f'Failed to update dialogs: {e}')
-            return False
-
-    @staticmethod
-    async def get_message(
-        client: Client,
-        user_client: Optional[Client],
-        chat_id: str,
-        message_id: int,
-        link_type: str
-    ) -> Optional[Message]:
-        """Get a message from a chat."""
-        try:
-            if link_type == 'public':
-                try:
-                    message = await client.get_messages(chat_id, message_id)
-                    if getattr(message, "empty", False):
+async def get_msg(c: Client, u: Optional[Client], i: Any, d: int, lt: str) -> Optional[Message]:
+    # c: bot client (pyrogram), u: user client (pyrogram), i: chat_id/username, d: message_id, lt: link_type
+    try:
+        target_chat_id = i
+        if lt == 'public':
+            try:
+                # For public, bot (c) should be able_to_get_messages directly.
+                # If channel username is given, use it. If ID, it should be integer.
+                xm = await c.get_messages(target_chat_id, d)
+                if hasattr(xm, "empty") and xm.empty: # Check if message is empty (deleted or service)
+                    emp[i] = True # Mark as empty
+                    # If user client (u) is available and bot failed, try with user client
+                    if u:
                         try:
-                            await user_client.join_chat(chat_id)
-                        except:
-                            pass
-                        chat = await user_client.get_chat(f"@{chat_id}")
-                        message = await user_client.get_messages(chat.id, message_id)
-                    return message
-                except Exception as e:
-                    print(f'Error fetching public message: {e}')
-                    return None
-            else:
-                if not user_client:
-                    return None
-                    
+                            await u.join_chat(target_chat_id) # Attempt to join if not already
+                        except Exception as join_err:
+                            print(f"User client failed to join {target_chat_id}: {join_err}")
+                        # Resolve peer for user client if username was passed
+                        resolved_chat_id_user = (await u.get_chat(target_chat_id)).id if isinstance(target_chat_id, str) else target_chat_id
+                        xm = await u.get_messages(resolved_chat_id_user, d)
+                return xm if not (hasattr(xm, "empty") and xm.empty) else None
+            except Exception as e_pub:
+                print(f'Error fetching public message ({target_chat_id}/{d}): {e_pub}')
+                # Fallback to user client if available
+                if u:
+                    try:
+                        resolved_chat_id_user = (await u.get_chat(target_chat_id)).id if isinstance(target_chat_id, str) else target_chat_id
+                        return await u.get_messages(resolved_chat_id_user, d)
+                    except Exception as e_pub_user:
+                        print(f'User client also failed for public message ({target_chat_id}/{d}): {e_pub_user}')
+                return None
+        else: # private link
+            if u: # User client (u) is necessary for private channels typically
                 try:
-                    await ClientManager.update_dialogs(user_client)
-                    resolved_id = await ClientManager.resolve_chat_id(user_client, chat_id)
-                    return await user_client.get_messages(resolved_id, message_id)
-                except Exception as e:
-                    print(f'Private channel error: {e}')
-                    return None
-        except Exception as e:
-            print(f'Error fetching message: {e}')
-            return None
+                    # Ensure chat_id is integer for Pyrogram, starts with -100 for channels
+                    chat_id_int = int(i) if str(i).lstrip('-').isdigit() else i
+                    if isinstance(chat_id_int, int) and not str(chat_id_int).startswith('-100'):
+                         chat_id_int = int(f"-100{chat_id_int}")
 
-    @staticmethod
-    async def resolve_chat_id(client: Client, chat_id: str) -> str:
-        """Resolve a chat ID to its proper format."""
+
+                    # No need to resolve_peer usually, get_messages handles usernames or IDs.
+                    # However, if 'i' can be just the numerical part of a channel ID (without -100), adjust it.
+                    # The E() function should return it with -100 already.
+                    
+                    # Warm up dialogs if necessary, but try direct fetch first
+                    # await upd_dlg(u) # Can be slow
+                    return await u.get_messages(chat_id_int, d)
+                except Exception as e_priv:
+                    print(f'Private channel error with user client ({chat_id_int}/{d}): {e_priv}')
+                    # Attempt to explicitly get_chat then get_messages if direct fetch fails
+                    try:
+                        chat_obj = await u.get_chat(chat_id_int)
+                        return await u.get_messages(chat_obj.id, d)
+                    except Exception as e_priv_fallback:
+                        print(f'Private channel fallback error ({chat_id_int}/{d}): {e_priv_fallback}')
+                        return None
+            else: # No user client provided for private link
+                print(f"Cannot fetch private message ({i}/{d}): User client (u) not available.")
+                return None
+    except Exception as e_get_msg:
+        print(f'Generic error in get_msg ({i}/{d}): {e_get_msg}')
+        return None
+
+async def get_ubot(uid: int) -> Optional[Client]: # User's own bot instance
+    bt = await get_user_data_key(uid, "bot_token")
+    if not bt: return None
+    if uid in UB and UB[uid].is_connected: return UB[uid] # Check if connected
+    
+    # If exists but not connected, try to start it
+    if uid in UB and not UB[uid].is_connected:
         try:
-            peer = await client.resolve_peer(chat_id)
-            if hasattr(peer, 'channel_id'):
-                return f'-100{peer.channel_id}'
-            elif hasattr(peer, 'chat_id'):
-                return f'-{peer.chat_id}'
-            elif hasattr(peer, 'user_id'):
-                return peer.user_id
-            return chat_id
-        except Exception:
-            try:
-                chat = await client.get_chat(chat_id)
-                return chat.id
-            except Exception:
-                await ClientManager.update_dialogs(client)
-                return chat_id
+            await UB[uid].start()
+            if UB[uid].is_connected:
+                return UB[uid]
+        except Exception as e_start_existing:
+            print(f"Error re-starting existing bot for user {uid}: {e_start_existing}")
+            # Fall through to create a new one if re-start fails, or remove from UB
+            del UB[uid] # Remove if failed to restart
 
-    @staticmethod
-    async def get_user_bot(user_id: int) -> Optional[Client]:
-        """Get or create a user bot client."""
-        bot_token = await get_user_data_key(user_id, "bot_token", None)
-        if not bot_token:
-            return None
-            
-        if user_id in UB:
-            return UB[user_id]
-            
+    try:
+        # Using unique name for session file for user's bot
+        bot = Client(f"user_bot_{uid}", bot_token=bt, api_id=API_ID, api_hash=API_HASH)
+        await bot.start()
+        UB[uid] = bot
+        return bot
+    except Exception as e:
+        print(f"Error starting new bot for user {uid}: {e}")
+        if uid in UB: del UB[uid] # Clean up if start failed
+        return None
+
+async def get_uclient(uid: int) -> Optional[Client]: # User's own user client instance
+    # First check if a user's own bot (ubot) can do the job, if it's already cached
+    ubot = UB.get(uid)
+    if ubot and ubot.is_connected: # If user has their own bot and it's active
+        # Decide if ubot is sufficient or if a user session is always preferred for certain actions
+        # For restricted content, a user session (UC) is generally needed.
+        pass # Fall through to check for full user client (UC)
+
+    # Check for cached and connected user client (UC)
+    cl = UC.get(uid)
+    if cl and cl.is_connected: return cl
+
+    # Attempt to start/restart user client if not connected or not found
+    ud = await get_user_data(uid)
+    if not ud: return ubot if ubot and ubot.is_connected else Y # Fallback to global userbot (Y) or ubot
+
+    xxx_encrypted = ud.get('session_string')
+    if xxx_encrypted:
         try:
-            bot = Client(
-                f"user_{user_id}",
-                bot_token=bot_token,
-                api_id=API_ID,
-                api_hash=API_HASH
-            )
-            await bot.start()
-            UB[user_id] = bot
-            return bot
-        except Exception as e:
-            print(f"Error starting bot for user {user_id}: {e}")
-            return None
+            ss_decrypted = dcs(xxx_encrypted) # Decrypt session string
+            # Using unique name for user's user client session
+            user_client_instance = Client(f'user_client_{uid}', api_id=API_ID, api_hash=API_HASH, device_model="v3saver_UserClient", session_string=ss_decrypted)
+            await user_client_instance.start()
+            # await upd_dlg(user_client_instance) # Optional dialog warming
+            UC[uid] = user_client_instance
+            return user_client_instance
+        except Exception as e_uclient:
+            print(f'User client ({uid}) start/load error: {e_uclient}')
+            # If user client fails, fallback to user's bot (if active) or global userbot Y
+            return ubot if ubot and ubot.is_connected else Y
+    
+    # No session string found, fallback to ubot or Y
+    return ubot if ubot and ubot.is_connected else Y
 
-    @staticmethod
-    async def get_user_client(user_id: int) -> Optional[Client]:
-        """Get or create a user client."""
-        # Check cached client
-        if user_id in UC:
-            return UC[user_id]
-            
-        # Get user data
-        user_data = await get_user_data(user_id)
-        if not user_data:
-            return await ClientManager.get_user_bot(user_id) or Y
-            
-        # Try to create from session string
-        session_string = user_data.get('session_string')
-        if session_string:
-            try:
-                decrypted_session = dcs(session_string)
-                client = Client(
-                    f'{user_id}_client',
-                    api_id=API_ID,
-                    api_hash=API_HASH,
-                    device_model="v3saver",
-                    session_string=decrypted_session
-                )
-                await client.start()
-                await ClientManager.update_dialogs(client)
-                UC[user_id] = client
-                return client
-            except Exception as e:
-                print(f'User client error: {e}')
-                return await ClientManager.get_user_bot(user_id) or Y
-                
-        return await ClientManager.get_user_bot(user_id) or Y
 
-class ProgressManager:
-    @staticmethod
-    async def update_progress(
-        client: Client,
-        total: int,
-        current: int,
-        chat_id: int,
-        message_id: int,
-        start_time: float
-    ) -> None:
-        """Update progress message."""
-        progress = current / total * 100
-        interval = (
-            10 if total >= 100 * 1024 * 1024 else
-            20 if total >= 50 * 1024 * 1024 else
-            30 if total >= 10 * 1024 * 1024 else
-            50
-        )
-        step = int(progress // interval) * interval
+async def prog(current, total, client_to_edit_message, chat_id_of_progress_message, message_id_of_progress_message, start_time_of_upload):
+    # client_to_edit_message: The Pyrogram client instance that sent the progress message
+    # chat_id_of_progress_message: Chat where the progress message is
+    # message_id_of_progress_message: ID of the message to edit
+    # start_time_of_upload: time.time() when upload started
+    
+    global P # P is used to track previous percentage to reduce edits
+    
+    # Use a unique key for P, e.g., combining chat_id and message_id
+    progress_key = f"{chat_id_of_progress_message}_{message_id_of_progress_message}"
+
+    p = current / total * 100
+    
+    # Determine edit interval based on total size or fixed percentage steps
+    interval_percent_step = 5 # Edit every 5%
+    # More sophisticated: larger step for larger files, or time-based interval
+    
+    # Calculate current step based on percentage
+    current_percent_step = int(p // interval_percent_step) * interval_percent_step
+
+    if progress_key not in P or P[progress_key] != current_percent_step or p >= 100:
+        P[progress_key] = current_percent_step
         
-        if message_id not in P or P[message_id] != step or progress >= 100:
-            P[message_id] = step
-            
-            current_mb = current / (1024 * 1024)
-            total_mb = total / (1024 * 1024)
-            bar = '🟢' * int(progress / 10) + '🔴' * (10 - int(progress / 10))
-            
-            elapsed = time.time() - start_time
-            speed = current / elapsed / (1024 * 1024) if elapsed > 0 else 0
-            eta = time.strftime(
-                '%M:%S',
-                time.gmtime((total - current) / (speed * 1024 * 1024))
-            ) if speed > 0 else '00:00'
-            
-            text = (
-                f"__**Pyro Handler...**__\n\n{bar}\n\n"
-                f"⚡**__Completed__**: {current_mb:.2f} MB / {total_mb:.2f} MB\n"
-                f"📊 **__Done__**: {progress:.2f}%\n"
-                f"🚀 **__Speed__**: {speed:.2f} MB/s\n"
-                f"⏳ **__ETA__**: {eta}\n\n"
-                f"**__Powered by Team SPY__**"
-            )
-            
-            try:
-                await client.edit_message_text(chat_id, message_id, text)
-                if progress >= 100:
-                    P.pop(message_id, None)
-            except Exception as e:
-                print(f"Error updating progress: {e}")
-
-class MessageProcessor:
-    @staticmethod
-    async def send_direct(
-        client: Client,
-        message: Message,
-        target_chat_id: int,
-        formatted_text: Optional[str] = None,
-        reply_to_message_id: Optional[int] = None
-    ) -> bool:
-        """Send a message directly to target chat."""
-        try:
-            if message.video:
-                await client.send_video(
-                    target_chat_id,
-                    message.video.file_id,
-                    caption=formatted_text,
-                    duration=message.video.duration,
-                    width=message.video.width,
-                    height=message.video.height,
-                    reply_to_message_id=reply_to_message_id
-                )
-            elif message.video_note:
-                await client.send_video_note(
-                    target_chat_id,
-                    message.video_note.file_id,
-                    reply_to_message_id=reply_to_message_id
-                )
-            elif message.voice:
-                await client.send_voice(
-                    target_chat_id,
-                    message.voice.file_id,
-                    reply_to_message_id=reply_to_message_id
-                )
-            elif message.sticker:
-                await client.send_sticker(
-                    target_chat_id,
-                    message.sticker.file_id,
-                    reply_to_message_id=reply_to_message_id
-                )
-            elif message.audio:
-                await client.send_audio(
-                    target_chat_id,
-                    message.audio.file_id,
-                    caption=formatted_text,
-                    duration=message.audio.duration,
-                    performer=message.audio.performer,
-                    title=message.audio.title,
-                    reply_to_message_id=reply_to_message_id
-                )
-            elif message.photo:
-                photo_id = (
-                    message.photo.file_id if hasattr(message.photo, 'file_id')
-                    else message.photo[-1].file_id
-                )
-                await client.send_photo(
-                    target_chat_id,
-                    photo_id,
-                    caption=formatted_text,
-                    reply_to_message_id=reply_to_message_id
-                )
-            elif message.document:
-                await client.send_document(
-                    target_chat_id,
-                    message.document.file_id,
-                    caption=formatted_text,
-                    file_name=message.document.file_name,
-                    reply_to_message_id=reply_to_message_id
-                )
-            else:
-                return False
-            return True
-        except Exception as e:
-            print(f'Direct send error: {e}')
-            return False
-
-    @staticmethod
-    async def process_message(
-        client: Client,
-        user_client: Client,
-        message: Message,
-        user_id: int,
-        chat_id: str,
-        message_id: int,
-        link_type: str,
-        target_chat_id: int
-    ) -> str:
-        """Process a single message."""
-        try:
-            # Get target chat configuration
-            cfg_chat = await get_user_data_key(user_id, 'chat_id', None)
-            reply_to_id = None
-            
-            if cfg_chat and '/' in cfg_chat:
-                parts = cfg_chat.split('/', 1)
-                target_chat_id = int(parts[0])
-                reply_to_id = int(parts[1]) if len(parts) > 1 else None
-            
-            # Handle text messages
-            if not message.media:
-                await client.send_message(
-                    target_chat_id,
-                    text=message.text.markdown,
-                    reply_to_message_id=reply_to_id
-                )
-                return 'Sent.'
-            
-            # Process media messages
-            original_text = message.caption.markdown if message.caption else ''
-            processed_text = await process_text_with_rules(user_id, original_text)
-            user_caption = await get_user_data_key(user_id, 'caption', '')
-            
-            final_text = (
-                f'{processed_text}\n\n{user_caption}' if processed_text and user_caption
-                else user_caption if user_caption
-                else processed_text
-            )
-            
-            # Try direct send for public channels
-            if link_type == 'public' and not getattr(message, "empty", False):
-                if await MessageProcessor.send_direct(
-                    client,
-                    message,
-                    target_chat_id,
-                    final_text,
-                    reply_to_id
-                ):
-                    return 'Sent directly.'
-            
-            # Download and process media
-            progress_msg = await client.send_message(user_id, 'Downloading...')
-            start_time = time.time()
-            
-            try:
-                file_path = await user_client.download_media(
-                    message,
-                    progress=ProgressManager.update_progress,
-                    progress_args=(
-                        client,
-                        user_id,
-                        progress_msg.id,
-                        start_time
-                    )
-                )
-                
-                if not file_path:
-                    await client.edit_message_text(
-                        user_id,
-                        progress_msg.id,
-                        'Failed to download.'
-                    )
-                    return 'Download failed.'
-                
-                # Rename file if needed
-                await client.edit_message_text(user_id, progress_msg.id, 'Renaming...')
-                if any([
-                    (message.video and message.video.file_name),
-                    (message.audio and message.audio.file_name),
-                    (message.document and message.document.file_name)
-                ]):
-                    file_path = await rename_file(file_path, user_id, progress_msg)
-                
-                file_size = os.path.getsize(file_path)
-                thumb = thumbnail(user_id)
-                
-                # Handle large files (>2GB)
-                if file_size > 2 * 1024 * 1024 * 1024 and Y:
-                    await client.edit_message_text(
-                        user_id,
-                        progress_msg.id,
-                        'File is larger than 2GB. Using alternative method...'
-                    )
-                    
-                    await ClientManager.update_dialogs(Y)
-                    metadata = await get_video_metadata(file_path)
-                    thumb = await screenshot(
-                        file_path,
-                        metadata['duration'],
-                        user_id
-                    )
-                    
-                    # Determine media type and send accordingly
-                    media_type = None
-                    if file_path.endswith('.mp4'):
-                        media_type = 'video'
-                    elif message.video_note:
-                        media_type = 'video_note'
-                    elif message.voice:
-                        media_type = 'voice'
-                    elif message.audio:
-                        media_type = 'audio'
-                    elif message.photo:
-                        media_type = 'photo'
-                    else:
-                        media_type = 'document'
-                    
-                    # Send to log group first
-                    send_method = getattr(Y, f'send_{media_type}', Y.send_document)
-                    sent_message = await send_method(
-                        LOG_GROUP,
-                        file_path,
-                        thumb=thumb if media_type == 'video' else None,
-                        duration=metadata['duration'] if media_type == 'video' else None,
-                        height=metadata['height'] if media_type == 'video' else None,
-                        width=metadata['width'] if media_type == 'video' else None,
-                        caption=final_text if message.caption and media_type not in ['video_note', 'voice'] else None,
-                        reply_to_message_id=reply_to_id,
-                        progress=ProgressManager.update_progress,
-                        progress_args=(
-                            client,
-                            user_id,
-                            progress_msg.id,
-                            start_time
-                        )
-                    )
-                    
-                    # Copy to target chat
-                    await client.copy_message(
-                        target_chat_id,
-                        LOG_GROUP,
-                        sent_message.id
-                    )
-                    
-                    # Cleanup
-                    os.remove(file_path)
-                    await client.delete_messages(user_id, progress_msg.id)
-                    
-                    return 'Done (Large file).'
-                
-                # Upload normally for smaller files
-                await client.edit_message_text(user_id, progress_msg.id, 'Uploading...')
-                
-                if message.video or os.path.splitext(file_path)[1].lower() == '.mp4':
-                    metadata = await get_video_metadata(file_path)
-                    thumb = await screenshot(
-                        file_path,
-                        metadata['duration'],
-                        user_id
-                    )
-                    
-                    await client.send_video(
-                        target_chat_id,
-                        video=file_path,
-                        caption=final_text if message.caption else None,
-                        thumb=thumb,
-                        width=metadata['width'],
-                        height=metadata['height'],
-                        duration=metadata['duration'],
-                        progress=ProgressManager.update_progress,
-                        progress_args=(
-                            client,
-                            user_id,
-                            progress_msg.id,
-                            start_time
-                        ),
-                        reply_to_message_id=reply_to_id
-                    )
-                elif message.video_note:
-                    await client.send_video_note(
-                        target_chat_id,
-                        video_note=file_path,
-                        progress=ProgressManager.update_progress,
-                        progress_args=(
-                            client,
-                            user_id,
-                            progress_msg.id,
-                            start_time
-                        ),
-                        reply_to_message_id=reply_to_id
-                    )
-                elif message.voice:
-                    await client.send_voice(
-                        target_chat_id,
-                        voice=file_path,
-                        progress=ProgressManager.update_progress,
-                        progress_args=(
-                            client,
-                            user_id,
-                            progress_msg.id,
-                            start_time
-                        ),
-                        reply_to_message_id=reply_to_id
-                    )
-                elif message.sticker:
-                    await client.send_sticker(
-                        target_chat_id,
-                        message.sticker.file_id
-                    )
-                elif message.audio:
-                    await client.send_audio(
-                        target_chat_id,
-                        audio=file_path,
-                        caption=final_text if message.caption else None,
-                        thumb=thumb,
-                        progress=ProgressManager.update_progress,
-                        progress_args=(
-                            client,
-                            user_id,
-                            progress_msg.id,
-                            start_time
-                        ),
-                        reply_to_message_id=reply_to_id
-                    )
-                elif message.photo:
-                    await client.send_photo(
-                        target_chat_id,
-                        photo=file_path,
-                        caption=final_text if message.caption else None,
-                        progress=ProgressManager.update_progress,
-                        progress_args=(
-                            client,
-                            user_id,
-                            progress_msg.id,
-                            start_time
-                        ),
-                        reply_to_message_id=reply_to_id
-                    )
-                else:
-                    await client.send_document(
-                        target_chat_id,
-                        document=file_path,
-                        caption=final_text if message.caption else None,
-                        progress=ProgressManager.update_progress,
-                        progress_args=(
-                            client,
-                            user_id,
-                            progress_msg.id,
-                            start_time
-                        ),
-                        reply_to_message_id=reply_to_id
-                    )
-                
-                # Cleanup
-                os.remove(file_path)
-                await client.delete_messages(user_id, progress_msg.id)
-                
-                return 'Done.'
-                
-            except Exception as e:
-                await client.edit_message_text(
-                    user_id,
-                    progress_msg.id,
-                    f'Upload failed: {str(e)[:30]}'
-                )
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                return 'Failed.'
-                
-        except Exception as e:
-            return f'Error: {str(e)[:50]}'
-
-# Initialize active users
-ACTIVE_USERS = BatchManager.load_active_users()
-
-# Command Handlers
-@X.on_message(filters.command(['batch', 'single']))
-async def handle_batch_command(client: Client, message: Message) -> None:
-    """Handle /batch and /single commands."""
-    user_id = message.from_user.id
-    command = message.command[0]
-    
-    # Check if service is available for free users
-    if FREEMIUM_LIMIT == 0 and not await is_premium_user(user_id):
-        await message.reply_text(
-            "This bot does not provide free services. Get a subscription from OWNER"
+        c_mb = current / (1024 * 1024)
+        t_mb = total / (1024 * 1024)
+        bar = '🟢' * int(p / 10) + '🔴' * (10 - int(p / 10))
+        
+        elapsed_time = time.time() - start_time_of_upload
+        speed_bytes_per_sec = current / elapsed_time if elapsed_time > 0 else 0
+        speed_mb_per_sec = speed_bytes_per_sec / (1024 * 1024)
+        
+        eta_seconds = (total - current) / speed_bytes_per_sec if speed_bytes_per_sec > 0 else 0
+        eta_formatted = time.strftime('%M:%S', time.gmtime(eta_seconds))
+        
+        progress_text = (
+            f"__**Pyro Handler Uploading...**__\n\n"
+            f"{bar}\n\n"
+            f"⚡**__Completed__**: {c_mb:.2f} MB / {t_mb:.2f} MB\n"
+            f"📊 **__Done__**: {p:.2f}%\n"
+            f"🚀 **__Speed__**: {speed_mb_per_sec:.2f} MB/s\n"
+            f"⏳ **__ETA__**: {eta_formatted}\n\n"
+            f"**__Powered by Team SPY__**"
         )
+        try:
+            await client_to_edit_message.edit_message_text(chat_id_of_progress_message, message_id_of_progress_message, progress_text)
+        except Exception as e_prog_edit:
+            print(f"Error editing progress message: {e_prog_edit}")
+            # If editing fails (e.g. message deleted), remove from P to stop trying
+            P.pop(progress_key, None)
+
+        if p >= 100:
+            P.pop(progress_key, None) # Clean up when done
+
+
+async def send_direct(c: Client, m: Message, tcid: int, ft: Optional[str] = None, rtmid: Optional[int] = None) -> bool:
+    # c: Client to send with, m: source Message, tcid: target chat_id, ft: formatted text, rtmid: reply_to_message_id
+    try:
+        caption_to_send = ft if ft and (m.video or m.audio or m.photo or m.document) else None
+
+        if m.video:
+            await c.send_video(tcid, m.video.file_id, caption=caption_to_send, 
+                               duration=m.video.duration, width=m.video.width, height=m.video.height, 
+                               reply_to_message_id=rtmid)
+        elif m.video_note: # Video notes don't have captions
+            await c.send_video_note(tcid, m.video_note.file_id, reply_to_message_id=rtmid)
+        elif m.voice: # Voice messages don't have captions
+            await c.send_voice(tcid, m.voice.file_id, reply_to_message_id=rtmid)
+        elif m.sticker:
+            await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
+        elif m.audio:
+            await c.send_audio(tcid, m.audio.file_id, caption=caption_to_send, 
+                               duration=m.audio.duration, performer=m.audio.performer, title=m.audio.title, 
+                               reply_to_message_id=rtmid)
+        elif m.photo:
+            # Pyrogram message.photo is a Photo object, not a list, if it's a single photo.
+            # If it could be a list (e.g. from media group), handle accordingly.
+            # Assuming m.photo is a Photo object.
+            await c.send_photo(tcid, m.photo.file_id, caption=caption_to_send, reply_to_message_id=rtmid)
+        elif m.document:
+            await c.send_document(tcid, m.document.file_id, caption=caption_to_send, 
+                                  file_name=m.document.file_name, reply_to_message_id=rtmid)
+        # Consider other media types like animation, game, poll, etc. if needed.
+        else:
+            # If it's a text message or unhandled media type that needs direct forwarding of text
+            if m.text: # Handle text messages if send_direct is also for text
+                 await c.send_message(tcid, text=m.text.markdown if m.text else "", reply_to_message_id=rtmid) # Send markdown for entities
+                 return True
+            return False # Unhandled media type or no media
+        return True
+    except Exception as e:
+        print(f'Direct send error to {tcid}: {e}')
+        return False
+
+
+async def process_msg(bot_client: Client, user_client: Optional[Client], source_msg: Message, 
+                      target_chat_id_user_perspective: str, # This is the chat_id of the user running the command
+                      link_type: str, user_id_of_commander: int, 
+                      source_chat_identifier: Any) -> str: # chat_id/username of the source channel
+    # bot_client: The bot's own Pyrogram client (X or a user-specific bot UB[uid])
+    # user_client: The commander's user session (UC[uid] or global Y) or None
+    # source_msg: The Message object from the source channel
+    # target_chat_id_user_perspective: Where the final message should appear for the user (e.g., their PM with the bot)
+    # link_type: 'public' or 'private'
+    # user_id_of_commander: The user ID who initiated this process
+    # source_chat_identifier: The ID or username of the channel/group where source_msg is from
+    
+    try:
+        # Determine target chat and reply_to_message_id based on user's settings
+        raw_chat_setting = await get_user_data_key(user_id_of_commander, 'chat_id')
+        final_target_chat_id: int = int(target_chat_id_user_perspective) # Default to user's PM with bot
+        final_reply_to_message_id: Optional[int] = None
+
+        if raw_chat_setting:
+            if '/' in str(raw_chat_setting):
+                parts = str(raw_chat_setting).split('/', 1)
+                try:
+                    final_target_chat_id = int(parts[0])
+                    final_reply_to_message_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+                except ValueError:
+                    print(f"Warning: Invalid chat_id setting '{raw_chat_setting}' for user {user_id_of_commander}. Defaulting to PM.")
+                    final_target_chat_id = int(target_chat_id_user_perspective) # Fallback
+            else:
+                try:
+                    final_target_chat_id = int(raw_chat_setting)
+                except ValueError:
+                    print(f"Warning: Invalid chat_id setting '{raw_chat_setting}' for user {user_id_of_commander}. Defaulting to PM.")
+                    final_target_chat_id = int(target_chat_id_user_perspective) # Fallback
+        
+        if source_msg.media:
+            original_caption = source_msg.caption.markdown if source_msg.caption and source_msg.caption.markdown else \
+                               (source_msg.caption if source_msg.caption else "") # Handle None caption
+            
+            processed_caption_rules = await process_text_with_rules(user_id_of_commander, original_caption)
+            user_custom_caption = await get_user_data_key(user_id_of_commander, 'caption', '')
+            
+            final_caption = f'{processed_caption_rules}\n\n{user_custom_caption}'.strip() \
+                if processed_caption_rules and user_custom_caption else \
+                (user_custom_caption or processed_caption_rules)
+
+            # Condition for direct send (e.g. from public channel, no modification needed, or if file is small)
+            # emp.get(source_chat_identifier, False) seems to be a cache for "is channel empty/inaccessible by bot"
+            if link_type == 'public' and not emp.get(source_chat_identifier, False):
+                if await send_direct(bot_client, source_msg, final_target_chat_id, final_caption, final_reply_to_message_id):
+                    return 'Sent directly (public, bot access).'
+            
+            # If direct send failed or not applicable, proceed with download-upload
+            # Choose download client: user_client if available and needed (e.g. restricted), else bot_client.
+            # For private links, user_client is essential. For public, bot_client might work or user_client as fallback.
+            downloader_client = user_client if user_client else bot_client # Prefer user_client for download if available
+
+            if not downloader_client: # Should not happen if logic is correct
+                 return "Error: No suitable client to download."
+
+            progress_msg = await bot_client.send_message(target_chat_id_user_perspective, 'Downloading source media...')
+            start_time_download = time.time()
+            
+            # Using Pyrogram's download_media which needs the message object itself
+            downloaded_file_path = await downloader_client.download_media(
+                message=source_msg,
+                progress=prog, # Assuming prog is compatible with Pyrogram's progress callback
+                progress_args=(bot_client, progress_msg.chat.id, progress_msg.id, start_time_download)
+            )
+                
+            if not downloaded_file_path or not os.path.exists(str(downloaded_file_path)):
+                await bot_client.edit_message_text(progress_msg.chat.id, progress_msg.id, 'Download failed.')
+                return 'Download failed.'
+            
+            await bot_client.edit_message_text(progress_msg.chat.id, progress_msg.id, 'Renaming (if needed)...')
+            
+            # Rename file based on settings
+            # rename_file expects sender_id (user_id_of_commander) and progress_msg (for edits)
+            renamed_file_path = await rename_file(str(downloaded_file_path), user_id_of_commander, progress_msg)
+            
+            file_size_gb = os.path.getsize(renamed_file_path) / (1024 * 1024 * 1024)
+            
+            # Get thumbnail path from user settings for the commander
+            custom_thumb_path = thumbnail(str(user_id_of_commander)) # func.thumbnail expects string sender_id
+
+            upload_client = bot_client # Upload usually via the main bot client (X or UB)
+            
+            # Large file handling (using global userbot Y if file > 2GB and Y is configured)
+            if file_size_gb > 1.9 and Y and Y.is_connected: # Pyrogram uses 2GB limit typically, use 1.9 as buffer
+                await bot_client.edit_message_text(progress_msg.chat.id, progress_msg.id, 'File > 2GB. Using premium userbot (Y) to upload to LOG_GROUP first...')
+                
+                # await upd_dlg(Y) # Optional dialog warming for Y
+                video_meta = await get_video_metadata(renamed_file_path) # from utils.func
+                duration, height, width = video_meta['duration'], video_meta['height'], video_meta['width']
+                
+                # Use custom_thumb_path if set, else generate screenshot
+                thumb_for_upload = custom_thumb_path if custom_thumb_path else await screenshot(renamed_file_path, duration, str(user_id_of_commander))
+                
+                start_time_upload_Y = time.time()
+                # Upload to LOG_GROUP using Y
+                # Determine media type for Y.send_XYZ
+                # This logic is complex and needs to map source_msg.media_type to Y.send_ functions
+                # Simplified: try sending as video if it's a video, else as document.
+                sent_to_log_group = None
+                if source_msg.video or renamed_file_path.lower().endswith(('.mp4', '.mkv', '.webm')):
+                    sent_to_log_group = await Y.send_video(LOG_GROUP, renamed_file_path, thumb=thumb_for_upload,
+                                          caption=final_caption, duration=duration, width=width, height=height,
+                                          reply_to_message_id=None, # No reply in log group usually
+                                          progress=prog, 
+                                          progress_args=(bot_client, progress_msg.chat.id, progress_msg.id, start_time_upload_Y))
+                else: # Fallback to document or specific types
+                    sent_to_log_group = await Y.send_document(LOG_GROUP, renamed_file_path, thumb=thumb_for_upload, 
+                                                 caption=final_caption, reply_to_message_id=None,
+                                                 progress=prog,
+                                                 progress_args=(bot_client, progress_msg.chat.id, progress_msg.id, start_time_upload_Y))
+
+                if sent_to_log_group:
+                    # Forward from LOG_GROUP to the final target
+                    await bot_client.copy_message(final_target_chat_id, LOG_GROUP, sent_to_log_group.id, 
+                                             reply_to_message_id=final_reply_to_message_id)
+                    await bot_client.delete_messages(progress_msg.chat.id, progress_msg.id) # Delete "Downloading..." etc.
+                    if os.path.exists(renamed_file_path): os.remove(renamed_file_path)
+                    if thumb_for_upload and not custom_thumb_path and os.path.exists(thumb_for_upload): os.remove(thumb_for_upload) # remove generated thumb
+                    return 'Done (Large file via Y).'
+                else:
+                    await bot_client.edit_message_text(progress_msg.chat.id, progress_msg.id, 'Failed to upload large file with Y.')
+                    if os.path.exists(renamed_file_path): os.remove(renamed_file_path)
+                    return 'Failed (Large file via Y).'
+
+            # Regular upload if not large file or Y not available
+            await bot_client.edit_message_text(progress_msg.chat.id, progress_msg.id, 'Uploading to target...')
+            start_time_upload_bot = time.time()
+
+            video_meta_bot = await get_video_metadata(renamed_file_path)
+            duration_bot, height_bot, width_bot = video_meta_bot['duration'], video_meta_bot['height'], video_meta_bot['width']
+            thumb_for_bot_upload = custom_thumb_path if custom_thumb_path else await screenshot(renamed_file_path, duration_bot, str(user_id_of_commander))
+
+            try:
+                # Match media type for sending
+                if source_msg.video or renamed_file_path.lower().endswith(('.mp4', '.mkv', '.webm')):
+                    await upload_client.send_video(final_target_chat_id, video=renamed_file_path, caption=final_caption,
+                                         thumb=thumb_for_bot_upload, width=width_bot, height=height_bot, duration=duration_bot,
+                                         progress=prog, progress_args=(bot_client, progress_msg.chat.id, progress_msg.id, start_time_upload_bot),
+                                         reply_to_message_id=final_reply_to_message_id)
+                elif source_msg.audio or renamed_file_path.lower().endswith(('.mp3', '.ogg', '.wav', '.flac')):
+                     # Pyrogram needs performer and title for audio if available from source_msg.audio
+                    performer = source_msg.audio.performer if source_msg.audio else None
+                    title = source_msg.audio.title if source_msg.audio else os.path.basename(renamed_file_path)
+                    audio_duration = source_msg.audio.duration if source_msg.audio else 0 # Get duration from source if possible
+                    
+                    await upload_client.send_audio(final_target_chat_id, audio=renamed_file_path, caption=final_caption,
+                                         thumb=thumb_for_bot_upload, # Thumb for audio is possible
+                                         duration=audio_duration, performer=performer, title=title,
+                                         progress=prog, progress_args=(bot_client, progress_msg.chat.id, progress_msg.id, start_time_upload_bot),
+                                         reply_to_message_id=final_reply_to_message_id)
+                elif source_msg.photo: # Assuming single photo. If media group, this needs more complex handling.
+                    await upload_client.send_photo(final_target_chat_id, photo=renamed_file_path, caption=final_caption,
+                                         progress=prog, progress_args=(bot_client, progress_msg.chat.id, progress_msg.id, start_time_upload_bot),
+                                         reply_to_message_id=final_reply_to_message_id)
+                # Add other types like video_note, voice, sticker based on source_msg
+                elif source_msg.document or True: # Default to document
+                    doc_filename = source_msg.document.file_name if source_msg.document else os.path.basename(renamed_file_path)
+                    await upload_client.send_document(final_target_chat_id, document=renamed_file_path, caption=final_caption,
+                                            thumb=thumb_for_bot_upload, file_name=doc_filename, # file_name is important for documents
+                                            progress=prog, progress_args=(bot_client, progress_msg.chat.id, progress_msg.id, start_time_upload_bot),
+                                            reply_to_message_id=final_reply_to_message_id)
+
+            except Exception as e_upload:
+                await bot_client.edit_message_text(progress_msg.chat.id, progress_msg.id, f'Upload failed: {str(e_upload)[:100]}')
+                if os.path.exists(renamed_file_path): os.remove(renamed_file_path)
+                if thumb_for_bot_upload and not custom_thumb_path and os.path.exists(thumb_for_bot_upload): os.remove(thumb_for_bot_upload)
+                return f'Upload failed: {str(e_upload)[:50]}'
+            
+            if os.path.exists(renamed_file_path): os.remove(renamed_file_path)
+            if thumb_for_bot_upload and not custom_thumb_path and os.path.exists(thumb_for_bot_upload): os.remove(thumb_for_bot_upload)
+            await bot_client.delete_messages(progress_msg.chat.id, progress_msg.id)
+            return 'Done.'
+            
+        elif source_msg.text: # Handle text messages
+            # Apply text processing rules if any for text messages too
+            processed_text = await process_text_with_rules(user_id_of_commander, source_msg.text.markdown)
+            user_custom_caption_for_text = await get_user_data_key(user_id_of_commander, 'caption', '') # Re-evaluate if 'caption' applies to text messages
+            
+            final_text_to_send = f'{processed_text}\n\n{user_custom_caption_for_text}'.strip() \
+                if processed_text and user_custom_caption_for_text else \
+                (user_custom_caption_for_text or processed_text)
+
+            await bot_client.send_message(final_target_chat_id, text=final_text_to_send, reply_to_message_id=final_reply_to_message_id)
+            return 'Text message sent.'
+        else:
+            return "Unsupported message type or empty message."
+            
+    except Exception as e_proc:
+        # Attempt to clean up progress message if it exists
+        if 'progress_msg' in locals() and progress_msg:
+            try:
+                await bot_client.edit_message_text(progress_msg.chat.id, progress_msg.id, f'Error: {str(e_proc)[:100]}')
+            except: pass # Ignore errors editing progress message on final error
+        print(f"Error in process_msg: {e_proc}")
+        return f'Error: {str(e_proc)[:50]}'
+
+@X.on_message(filters.command(['batch', 'single']))
+async def process_cmd(c: Client, m: Message): # c is X (main bot client)
+    uid = m.from_user.id
+    cmd = m.command[0]
+    
+    if FREEMIUM_LIMIT == 0 and not await is_premium_user(uid):
+        await m.reply_text("This bot does not provide free services, get subscription from OWNER")
         return
     
-    # Check force subscription
-    if await sub(client, message) == 1:
+    if await sub(c, m) == 1: return # Force subscribe check
+    
+    pro = await m.reply_text('Performing initial checks...')
+    
+    if is_user_active(uid):
+        await pro.edit('You have an active task. Use /cancel or /stop to cancel it before starting a new one.')
         return
     
-    progress_msg = await message.reply_text('Doing some checks, please wait...')
-    
-    # Check for active tasks
-    if BatchManager.is_user_active(user_id):
-        await progress_msg.edit('You have an active task. Use /stop to cancel it.')
+    # Ensure user has a bot_token set for /setbot, as get_ubot will try to use it
+    user_bot_token = await get_user_data_key(uid, "bot_token")
+    if not user_bot_token:
+        await pro.edit('You need to add your bot token first using /setbot command.')
+        return
+
+    # Check if the user's bot (ubot) can be started/is active
+    ubot = await get_ubot(uid) # This will attempt to start the user's bot if not active
+    if not ubot or not ubot.is_connected:
+        await pro.edit('Failed to start/activate your bot (from /setbot). Please check your token or try /setbot again.')
+        Z.pop(uid, None) # Clear any pending state for this user
         return
     
-    # Check if user has a bot set up
-    user_bot = await ClientManager.get_user_bot(user_id)
-    if not user_bot:
-        await progress_msg.edit('Please add your bot with /setbot first')
-        return
-    
-    # Initialize batch state
-    Z[user_id] = {
-        'step': 'start' if command == 'batch' else 'start_single',
-        'client': user_bot
-    }
-    
-    await progress_msg.edit(
-        f"Send {'the start link...' if command == 'batch' else 'the link to process'}"
-    )
+    Z[uid] = {'step': 'start' if cmd == 'batch' else 'start_single'}
+    await pro.edit(f'Send the {"start link of the batch..." if cmd == "batch" else "link of the single message to process"}.')
+
 
 @X.on_message(filters.command(['cancel', 'stop']))
-async def handle_cancel_command(client: Client, message: Message) -> None:
-    """Handle /cancel and /stop commands."""
-    user_id = message.from_user.id
+async def cancel_cmd(c: Client, m: Message):
+    uid = m.from_user.id
     
-    if BatchManager.is_user_active(user_id):
-        if await BatchManager.request_batch_cancel(user_id):
-            await message.reply_text(
-                'Cancellation requested. The current batch will stop after '
-                'the current download completes.'
-            )
+    # Cancel batch/single processing if active
+    if is_user_active(uid):
+        if await request_batch_cancel(uid): # This sets a flag
+            await m.reply_text('Cancellation requested. The current process will stop shortly.')
+            # The running batch/single loop needs to check should_cancel(uid)
         else:
-            await message.reply_text(
-                'Failed to request cancellation. Please try again.'
-            )
+            # This case (request_batch_cancel returning False) shouldn't happen if is_user_active is true.
+            await m.reply_text('Failed to request cancellation (user not found in active list). This is unexpected.')
     else:
-        await message.reply_text('No active batch process found.')
+        await m.reply_text('No active batch/single process found to cancel.')
 
-@X.on_message(
-    filters.text &
-    filters.private &
-    ~login_in_progress &
-    ~filters.command([
-        'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set', 
-        'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo', 
-        'encrypt', 'decrypt', 'keys', 'setbot', 'rembot'
-    ])
-)
-async def handle_text_message(client: Client, message: Message) -> None:
-    """Handle text messages during batch processing."""
-    user_id = message.from_user.id
-    if user_id not in Z:
-        return
-        
-    state = Z[user_id].get('step')
-    text = message.text.strip()
+    # Also cancel any pending input step via Z dictionary (e.g., waiting for link or count)
+    if uid in Z:
+        Z.pop(uid, None)
+        await m.reply_text('Any pending input steps have also been cleared.')
+        # No active process, but maybe was waiting for input.
+
+
+# Adjusted filter for text_handler to avoid conflicts with other command handlers
+# It should only trigger if a user is in a Z state (multi-step command like batch/single)
+# And the message is not another command.
+async def z_state_filter(_, __, message: Message):
+    if message.from_user and message.from_user.id in Z and message.text:
+        # Ensure it's not a command starting with / unless it's part of the expected input
+        # This check might be too simple if commands can be part of valid input text
+        # For now, if in Z state, and it's text, assume it's for the current step.
+        return not message.text.startswith('/')
+    return False
+
+custom_z_state_filter = filters.create(z_state_filter)
+
+@X.on_message(custom_z_state_filter & filters.text & filters.private & ~login_in_progress)
+async def text_handler(c: Client, m: Message): # c is X (main bot client)
+    uid = m.from_user.id
+    # uid check already in custom_z_state_filter, but good for safety
+    if uid not in Z: return 
     
-    if state == 'start' or state == 'start_single':
-        # Parse the Telegram link
-        chat_id, message_id, link_type = parse_telegram_link(text)
-        if not chat_id or not message_id:
-            await message.reply_text('Invalid link format.')
-            Z.pop(user_id, None)
+    s = Z[uid].get('step')
+    current_bot_for_user = await get_ubot(uid) # This is the user's configured bot
+    if not current_bot_for_user or not current_bot_for_user.is_connected:
+        await m.reply_text("Your personal bot (from /setbot) is not active. Please use /setbot again.")
+        Z.pop(uid, None)
+        return
+
+    if s == 'start': # Waiting for start link for batch
+        L = m.text
+        i, d, lt = E(L) # E extracts (chat_id/username, message_id, link_type)
+        if not i or not d:
+            await m.reply_text('Invalid link format for batch start. Please send a valid Telegram message link.')
+            Z.pop(uid, None)
             return
-            
-        Z[user_id].update({
-            'step': 'count' if state == 'start' else 'process_single',
-            'chat_id': chat_id,
-            'message_id': message_id,
-            'link_type': link_type
+        Z[uid].update({'step': 'count', 'cid': i, 'sid': d, 'lt': lt})
+        await m.reply_text('Link received. Now, how many messages do you want to process in this batch?')
+
+    elif s == 'start_single': # Waiting for link for single message processing
+        L = m.text
+        i, d_single, lt_single = E(L)
+        if not i or not d_single:
+            await m.reply_text('Invalid link format for single message. Please send a valid Telegram message link.')
+            Z.pop(uid, None)
+            return
+
+        # For single message, process immediately
+        # Z[uid].update({'step': 'process_single', 'cid': i, 'sid': d_single, 'lt': lt_single})
+        # No need to update Z if processing is done here. Clear Z for this user.
+        
+        cid_single, start_msg_id_single, link_type_single = i, d_single, lt_single
+        
+        pt_single = await m.reply_text(f'Processing single message: {L}')
+        
+        # ubot is current_bot_for_user
+        # uc is the user's own client session for accessing restricted content
+        uc_single = await get_uclient(uid) # This will fallback to Y (global userbot) if user has no session
+        
+        if not uc_single and link_type_single == 'private':
+            await pt_single.edit('Cannot process private link without a user session. Please /login with your user account.')
+            Z.pop(uid, None)
+            return
+        
+        # Check if another task is active for this user (should have been caught by process_cmd, but double check)
+        if is_user_active(uid):
+            await pt_single.edit('Another task is already active. Please use /stop or /cancel first.')
+            Z.pop(uid, None)
+            return
+
+        await add_active_batch(uid, { # Using batch mechanism for single too, for cancellation
+            "total": 1, "current": 0, "success": 0, "cancel_requested": False, 
+            "progress_message_id": pt_single.id, "type": "single"
         })
-        
-        if state == 'start':
-            await message.reply_text('How many messages?')
-        else:
-            await process_single_message(client, message, user_id)
-            
-    elif state == 'count':
-        if not text.isdigit():
-            await message.reply_text('Please enter a valid number.')
+
+        try:
+            msg_to_process = await get_msg(current_bot_for_user, uc_single, cid_single, start_msg_id_single, link_type_single)
+            if msg_to_process:
+                # process_msg args: bot_client, user_client, source_msg, target_chat_id_user_perspective, link_type, user_id_of_commander, source_chat_identifier
+                res_single = await process_msg(current_bot_for_user, uc_single, msg_to_process, 
+                                               str(m.chat.id), link_type_single, uid, cid_single)
+                await pt_single.edit(f'Result (1/1): {res_single}')
+                if "Done" in res_single or "Sent" in res_single:
+                    await update_batch_progress(uid, 1,1) # Mark as success
+            else:
+                await pt_single.edit(f'Message not found at link: {L}')
+        except Exception as e_single:
+            await pt_single.edit(f'Error processing single message: {str(e_single)[:100]}')
+        finally:
+            await remove_active_batch(uid) # Clear active state
+            Z.pop(uid, None) # Clear Z state
+
+    elif s == 'count': # Waiting for number of messages for batch
+        if not m.text.isdigit():
+            await m.reply_text('Please enter a valid number for the message count.')
+            # Z[uid]['step'] remains 'count' to await valid input
             return
-            
-        count = int(text)
-        max_limit = (
-            PREMIUM_LIMIT if await is_premium_user(user_id)
-            else FREEMIUM_LIMIT
-        )
         
+        count = int(m.text)
+        max_limit = PREMIUM_LIMIT if await is_premium_user(uid) else FREEMIUM_LIMIT
+
+        if count <= 0:
+            await m.reply_text('Number of messages must be greater than 0.')
+            return
         if count > max_limit:
-            await message.reply_text(
-                f'Maximum limit is {max_limit} for your account type.'
-            )
+            await m.reply_text(f'Maximum batch limit is {max_limit}. You requested {count}.')
+            # Z[uid]['step'] remains 'count' or pop Z to restart
+            Z.pop(uid, None) # Or ask for new count
             return
-            
-        Z[user_id].update({
-            'step': 'process',
-            'target_chat_id': str(message.chat.id),
-            'count': count
+
+        # Z[uid].update({'step': 'process_batch', 'did': str(m.chat.id), 'num': count})
+        # Extract info from Z for batch processing
+        cid_batch = Z[uid]['cid']
+        start_msg_id_batch = Z[uid]['sid']
+        num_messages_batch = count
+        link_type_batch = Z[uid]['lt']
+        target_display_chat_id = str(m.chat.id) # Where progress and final messages are shown
+
+        # Clear Z state as we are proceeding with batch
+        Z.pop(uid, None) 
+        
+        pt_batch = await m.reply_text(f'Starting batch process for {num_messages_batch} messages from message ID {start_msg_id_batch}...')
+        
+        uc_batch = await get_uclient(uid) # User client (session or Y)
+        if not uc_batch and link_type_batch == 'private':
+            await pt_batch.edit('Cannot process private links in batch without a user session. Please /login.')
+            return
+
+        if is_user_active(uid): # Should not happen if initial checks were done
+            await pt_batch.edit('Another task is already active. This is an unexpected state.')
+            return
+        
+        await add_active_batch(uid, {
+            "total": num_messages_batch, "current": 0, "success": 0, 
+            "cancel_requested": False, "progress_message_id": pt_batch.id, "type": "batch"
         })
         
-        await process_batch_messages(client, message, user_id)
-
-async def process_single_message(
-    client: Client,
-    message: Message,
-    user_id: int
-) -> None:
-    """Process a single message from a link."""
-    state = Z[user_id]
-    progress_msg = await message.reply_text('Processing...')
-    
-    user_bot = UB.get(user_id)
-    if not user_bot:
-        await progress_msg.edit('Please add your bot with /setbot first')
-        Z.pop(user_id, None)
-        return
-        
-    user_client = await ClientManager.get_user_client(user_id)
-    if not user_client:
-        await progress_msg.edit('Cannot proceed without user client.')
-        Z.pop(user_id, None)
-        return
-        
-    if BatchManager.is_user_active(user_id):
-        await progress_msg.edit('You have an active task. Use /stop first.')
-        Z.pop(user_id, None)
-        return
-    
-    try:
-        msg = await ClientManager.get_message(
-            user_bot,
-            user_client,
-            state['chat_id'],
-            state['message_id'],
-            state['link_type']
-        )
-        
-        if msg:
-            result = await MessageProcessor.process_message(
-                client,
-                user_client,
-                msg,
-                user_id,
-                state['chat_id'],
-                state['message_id'],
-                state['link_type'],
-                state.get('target_chat_id', str(message.chat.id))
-            )
-            await progress_msg.edit(f'1/1: {result}')
-        else:
-            await progress_msg.edit('Message not found')
-    except Exception as e:
-        await progress_msg.edit(f'Error: {str(e)[:50]}')
-    finally:
-        Z.pop(user_id, None)
-
-async def process_batch_messages(
-    client: Client,
-    message: Message,
-    user_id: int
-) -> None:
-    """Process a batch of messages."""
-    state = Z[user_id]
-    progress_msg = await message.reply_text('Processing batch...')
-    
-    user_bot = state.get('client')
-    user_client = await ClientManager.get_user_client(user_id)
-    
-    if not user_client or not user_bot:
-        await progress_msg.edit('Missing client setup')
-        Z.pop(user_id, None)
-        return
-        
-    if BatchManager.is_user_active(user_id):
-        await progress_msg.edit('You already have an active task')
-        Z.pop(user_id, None)
-        return
-    
-    # Initialize batch tracking
-    await BatchManager.add_active_batch(user_id, {
-        "total": state['count'],
-        "current": 0,
-        "success": 0,
-        "cancel_requested": False,
-        "progress_message_id": progress_msg.id
-    })
-    
-    success_count = 0
-    
-    try:
-        for i in range(state['count']):
-            if BatchManager.should_cancel(user_id):
-                await progress_msg.edit(
-                    f'Cancelled at {i}/{state["count"]}. Success: {success_count}'
-                )
-                break
+        success_count_batch = 0
+        try:
+            for j in range(num_messages_batch):
+                if should_cancel(uid):
+                    await pt_batch.edit(f'Batch processing cancelled by user at {j+1}/{num_messages_batch}. Successfully processed: {success_count_batch}.')
+                    break
                 
-            await BatchManager.update_batch_progress(user_id, i, success_count)
-            
-            current_message_id = int(state['message_id']) + i
-            
-            try:
-                msg = await ClientManager.get_message(
-                    user_bot,
-                    user_client,
-                    state['chat_id'],
-                    current_message_id,
-                    state['link_type']
-                )
+                current_message_id_in_batch = int(start_msg_id_batch) + j
+                await update_batch_progress(uid, j + 1, success_count_batch) # current is (j+1)th message
                 
-                if msg:
-                    result = await MessageProcessor.process_message(
-                        client,
-                        user_client,
-                        msg,
-                        user_id,
-                        state['chat_id'],
-                        current_message_id,
-                        state['link_type'],
-                        state['target_chat_id']
-                    )
-                    
-                    if any(s in result for s in ['Done', 'Copied', 'Sent']):
-                        success_count += 1
-                else:
-                    pass  # Message not found, skip
-            except Exception as e:
+                # Update progress message for the user
                 try:
-                    await progress_msg.edit(
-                        f'{i+1}/{state["count"]}: Error - {str(e)[:30]}'
-                    )
-                except:
-                    pass
+                    await pt_batch.edit_text(f"Processing message {j+1}/{num_messages_batch} (ID: {current_message_id_in_batch})... Success: {success_count_batch}")
+                except Exception: pass # Ignore if editing fails (e.g., rate limits)
+
+                msg_to_process_batch = await get_msg(current_bot_for_user, uc_batch, cid_batch, current_message_id_in_batch, link_type_batch)
                 
-            await asyncio.sleep(10)  # Rate limiting
+                if msg_to_process_batch:
+                    res_batch = await process_msg(current_bot_for_user, uc_batch, msg_to_process_batch,
+                                                  target_display_chat_id, link_type_batch, uid, cid_batch)
+                    if "Done" in res_batch or "Sent" in res_batch: # Crude success check
+                        success_count_batch += 1
+                    # Log individual message result (optional, could be verbose)
+                    # print(f"Batch ({uid}) msg {j+1}: {res_batch}")
+                else:
+                    # print(f"Batch ({uid}) msg {j+1} (ID: {current_message_id_in_batch}) not found or failed to fetch.")
+                    pass # Optionally log this failure
+                
+                await asyncio.sleep(max(1, int(os.getenv("BATCH_SLEEP_INTERVAL", "5")))) # Configurable sleep, default 5s
             
-        if i + 1 == state['count']:
-            await message.reply_text(
-                f'Batch Completed ✅ Success: {success_count}/{state["count"]}'
-            )
-    finally:
-        await BatchManager.remove_active_batch(user_id)
-        Z.pop(user_id, None)
+            # Final message after loop finishes (or breaks due to cancellation)
+            if not should_cancel(uid): # If not cancelled
+                 await pt_batch.reply_text(f'Batch processing completed for {num_messages_batch} messages. Successfully processed: {success_count_batch}/{num_messages_batch}.')
+
+        except Exception as e_batch:
+            await pt_batch.reply_text(f'An error occurred during batch processing: {str(e_batch)[:100]}')
+        finally:
+            await remove_active_batch(uid) # Clear active state
+            # Z should already be cleared for this user
+            
+    else: # Unknown step in Z, should not happen
+        await m.reply_text("I'm confused about our current conversation. Please start over with a command.")
+        Z.pop(uid, None)
