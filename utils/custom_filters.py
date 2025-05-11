@@ -1,29 +1,23 @@
 from pyrogram import filters
-from typing import Dict, Optional, Union
+from pyrogram.types import Message # For type hinting
 
-# Use a more specific type annotation
-user_steps: Dict[int, str] = {}  # {user_id: step}
+user_steps: dict = {} # Type hint for clarity
 
-def login_filter_func(_, __, message) -> bool:
-    """Custom filter to check if user is in login process."""
-    if not message or not message.from_user:
-        return False
-    return message.from_user.id in user_steps
+# The filter function signature expects client, filter, and update (message)
+def login_filter_func(_, __, message: Message) -> bool:
+    if message.from_user: # Ensure from_user exists
+        user_id = message.from_user.id
+        return user_id in user_steps
+    return False
 
-login_in_progress = filters.create(login_filter_func, name="LoginInProgressFilter")
+login_in_progress = filters.create(login_filter_func)
 
-def set_user_step(user_id: int, step: Optional[str] = None) -> None:
-    """
-    Set or clear user's current step.
-    Args:
-        user_id: Telegram user ID
-        step: If provided, sets the step. If None, clears the step.
-    """
-    if step:
+def set_user_step(user_id: int, step: any = None): # step can be anything, e.g., int or str
+    if step is not None: # Check against None explicitly
         user_steps[user_id] = step
     else:
-        user_steps.pop(user_id, None)
+        user_steps.pop(user_id, None) # Safely remove if exists
 
-def get_user_step(user_id: int) -> Optional[str]:
-    """Get user's current step or None if no step is set."""
+
+def get_user_step(user_id: int) -> any: # Return type can be varied
     return user_steps.get(user_id)
